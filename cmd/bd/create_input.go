@@ -63,6 +63,12 @@ type createInput struct {
 	validationMode     string
 }
 
+// graphApplyOptions projects the plan-wide CLI flags into the options every
+// graph validation/materialization helper takes.
+func (in createInput) graphApplyOptions() GraphApplyOptions {
+	return GraphApplyOptions{Ephemeral: in.ephemeral, NoHistory: in.noHistory, Force: in.force}
+}
+
 func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	in := createInput{}
 

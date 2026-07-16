@@ -402,18 +402,21 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 			dryUW.Close(ctx)
 			return HandleError("load create context: %v", err)
 		}
-		customStatuses := resolveProxiedCustomStatuses(ctx, dryUW)
+		var customStatuses []string
+		if graphPlanHasStatuses(&plan) {
+			customStatuses = resolveProxiedCustomStatuses(ctx, dryUW)
+		}
 		dryUW.Close(ctx)
 		if err := validateProxiedGraphPlan(&plan, in, cctx, customStatuses); err != nil {
 			return HandleError("invalid graph plan: %v", err)
 		}
-		if err := emitGraphApplyDryRun(&plan, GraphApplyOptions{Ephemeral: in.ephemeral, NoHistory: in.noHistory}); err != nil {
+		if err := emitGraphApplyDryRun(&plan, in.graphApplyOptions()); err != nil {
 			return HandleError("%v", err)
 		}
 		return nil
 	}
 
-	domainPlan, useWisp, err := buildDomainGraphPlan(plan, in)
+	domainPlan, err := buildDomainGraphPlan(plan, in)
 	if err != nil {
 		return err
 	}
@@ -429,9 +432,17 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 			return nil, "", fmt.Errorf("load create context: %w", err)
 		}
 
-		if err := validateProxiedGraphPlan(&plan, in, cctx, resolveProxiedCustomStatuses(ctx, uw)); err != nil {
+		var customStatuses []string
+		if graphPlanHasStatuses(&plan) {
+			customStatuses = resolveProxiedCustomStatuses(ctx, uw)
+		}
+		if err := validateProxiedGraphPlan(&plan, in, cctx, customStatuses); err != nil {
 			return nil, "", fmt.Errorf("invalid graph plan: %w", err)
 		}
+
+		// validateProxiedGraphPlan enforced a uniform storage class, so the
+		// first node decides which table the whole plan routes to.
+		useWisp := domainPlan.Nodes[0].Issue.Ephemeral || domainPlan.Nodes[0].Issue.NoHistory
 
 		var result domain.GraphApplyResult
 		var applyErr error
@@ -478,31 +489,21 @@ func validateProxiedGraphPlan(plan *GraphApplyPlan, in createInput, cctx domain.
 	if err := validateGraphApplyPlan(plan, resolveProxiedCustomTypes(cctx.CustomTypes), customStatuses); err != nil {
 		return err
 	}
-	opts := GraphApplyOptions{Ephemeral: in.ephemeral, NoHistory: in.noHistory}
+	opts := in.graphApplyOptions()
 	if err := validateGraphApplyStorageClasses(plan, opts, true); err != nil {
 		return err
 	}
-	return validateGraphApplyExplicitIDPrefixes(plan, overlayYAMLPrefix(cctx.IssuePrefix), cctx.AllowedPrefixes, in.force)
+	return validateGraphApplyExplicitIDPrefixes(plan, overlayYAMLPrefix(cctx.IssuePrefix), cctx.AllowedPrefixes, opts.Force)
 }
 
-// buildDomainGraphPlan materializes every plan node through the shared
-// graphApplyNodeIssue path (full issue-model parity with `bd create`) and
-// returns whether the plan routes to the wisps table. Domain graph creation
-// routes the whole plan to a single table, so per-node storage-class
-// overrides must be uniform in proxied-server mode.
-func buildDomainGraphPlan(plan GraphApplyPlan, in createInput) (domain.GraphPlan, bool, error) {
-	opts := GraphApplyOptions{Ephemeral: in.ephemeral, NoHistory: in.noHistory}
-	var useWisp bool
+// graphApplyNodeIssue path (full issue-model parity with `bd create`).
+func buildDomainGraphPlan(plan GraphApplyPlan, in createInput) (domain.GraphPlan, error) {
+	opts := in.graphApplyOptions()
 	nodes := make([]domain.GraphNode, 0, len(plan.Nodes))
-	for i, n := range plan.Nodes {
+	for _, n := range plan.Nodes {
 		issue, err := graphApplyNodeIssue(n, opts, in.createdBy, in.owner)
 		if err != nil {
-			return domain.GraphPlan{}, false, fmt.Errorf("invalid graph plan: %w", err)
-		}
-		if i == 0 {
-			// validateGraphApplyStorageClasses(requireUniform=true) already
-			// rejected mixed plans, so the first node decides the table.
-			useWisp = issue.Ephemeral || issue.NoHistory
+			return domain.GraphPlan{}, fmt.Errorf("invalid graph plan: %w", err)
 		}
 		nodes = append(nodes, domain.GraphNode{
 			Key:               n.Key,
@@ -529,5 +530,5 @@ func buildDomainGraphPlan(plan GraphApplyPlan, in createInput) (domain.GraphPlan
 			ThreadID:   e.ThreadID,
 		})
 	}
-	return domain.GraphPlan{Nodes: nodes, Edges: edges}, useWisp, nil
+	return domain.GraphPlan{Nodes: nodes, Edges: edges}, nil
 }

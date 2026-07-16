@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -130,68 +131,31 @@ type GraphApplyDryRunRow struct {
 
 const graphApplyDryRunTransactionValidationNote = "dry-run validates the graph structure only; live create may still reject parent-child blocking paths after resolving stored dependencies"
 
-// knownGraphPlanFields lists the JSON keys recognized at the top level of a
-// GraphApplyPlan. Any other top-level keys produce a warning so users can spot
-// schema typos (e.g. when a plan uses a sibling tool's format) instead of
-// having fields silently dropped by encoding/json. (GH#3367)
-var knownGraphPlanFields = map[string]struct{}{
-	"commit_message": {},
-	"nodes":          {},
-	"edges":          {},
-}
+// The known-field sets list the JSON keys recognized on each plan struct. Any
+// other keys produce a warning so users can spot schema typos (e.g. when a
+// plan uses a sibling tool's format) instead of having fields silently dropped
+// by encoding/json. Derived from the json tags so they can't drift as the
+// schema grows. (GH#3367)
+var (
+	knownGraphPlanFields = jsonTagSet(reflect.TypeOf(GraphApplyPlan{}))
+	knownGraphNodeFields = jsonTagSet(reflect.TypeOf(GraphApplyNode{}))
+	knownGraphEdgeFields = jsonTagSet(reflect.TypeOf(GraphApplyEdge{}))
+)
 
-// knownGraphNodeFields lists the JSON keys recognized on a GraphApplyNode.
-// Kept in sync with the json tags on GraphApplyNode. (GH#3367)
-var knownGraphNodeFields = map[string]struct{}{
-	"key":                 {},
-	"id":                  {},
-	"title":               {},
-	"type":                {},
-	"status":              {},
-	"description":         {},
-	"design":              {},
-	"acceptance_criteria": {},
-	"notes":               {},
-	"spec_id":             {},
-	"external_ref":        {},
-	"assignee":            {},
-	"assign_after_create": {},
-	"owner":               {},
-	"priority":            {},
-	"estimate":            {},
-	"estimated_minutes":   {},
-	"due_at":              {},
-	"defer_until":         {},
-	"labels":              {},
-	"metadata":            {},
-	"metadata_refs":       {},
-	"parent":              {},
-	"parent_key":          {},
-	"parent_id":           {},
-	"deps":                {},
-	"ephemeral":           {},
-	"no_history":          {},
-	"wisp_type":           {},
-	"mol_type":            {},
-	"pinned":              {},
-	"event_kind":          {},
-	"actor":               {},
-	"target":              {},
-	"payload":             {},
-}
-
-// knownGraphEdgeFields lists the JSON keys recognized on a GraphApplyEdge.
-// Kept in sync with the json tags on GraphApplyEdge. (GH#3367)
-var knownGraphEdgeFields = map[string]struct{}{
-	"from_key":    {},
-	"from_id":     {},
-	"to_key":      {},
-	"to_id":       {},
-	"type":        {},
-	"gate":        {},
-	"spawner_key": {},
-	"spawner_id":  {},
-	"thread_id":   {},
+// jsonTagSet returns the set of JSON field names declared on t's struct tags.
+func jsonTagSet(t reflect.Type) map[string]struct{} {
+	out := make(map[string]struct{}, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		if comma := strings.IndexByte(tag, ','); comma >= 0 {
+			tag = tag[:comma]
+		}
+		out[tag] = struct{}{}
+	}
+	return out
 }
 
 // graphFieldHints maps unknown-field names to a corrective hint pointing at
@@ -367,7 +331,11 @@ func createIssuesFromGraph(planFile string, dryRun bool, opts GraphApplyOptions)
 		return HandleErrorRespectJSON("parsing graph plan: %v", err)
 	}
 
-	if err := validateGraphApplyPlan(&plan, loadEmbeddedCustomTypes(), loadEmbeddedCustomStatuses()); err != nil {
+	var customStatuses []string
+	if graphPlanHasStatuses(&plan) {
+		customStatuses = loadEmbeddedCustomStatuses()
+	}
+	if err := validateGraphApplyPlan(&plan, loadEmbeddedCustomTypes(), customStatuses); err != nil {
 		return HandleErrorRespectJSON("invalid graph plan: %v", err)
 	}
 	if err := validateGraphApplyStorageClasses(&plan, opts, false); err != nil {
@@ -504,7 +472,7 @@ func validateGraphApplyPlan(plan *GraphApplyPlan, customTypes, customStatuses []
 				return fmt.Errorf("node %q: invalid type %q", node.Key, node.Type)
 			}
 		}
-		if err := validateGraphApplyNodeFields(node, customStatuses); err != nil {
+		if err := validateGraphApplyNodeFields(node, customTypes, customStatuses); err != nil {
 			return err
 		}
 		if node.ID != "" {
@@ -614,20 +582,15 @@ func validateGraphApplyPlan(plan *GraphApplyPlan, customTypes, customStatuses []
 // validateGraphApplyNodeFields checks the single-node fields added for
 // bd-create parity, mirroring the flag-shape checks `bd create` applies
 // (config-gated template linting is not run on graph plans).
-func validateGraphApplyNodeFields(node GraphApplyNode, customStatuses []string) error {
+func validateGraphApplyNodeFields(node GraphApplyNode, customTypes, customStatuses []string) error {
 	if node.ID != "" {
 		if _, err := validation.ValidateIDFormat(node.ID); err != nil {
 			return fmt.Errorf("node %q: %w", node.Key, err)
 		}
 	}
+	// Friendlier status message than the issue-model validator's below.
 	if node.Status != "" && !types.Status(node.Status).IsValidWithCustom(customStatuses) {
 		return fmt.Errorf("node %q: invalid status %q (valid: %s; configure custom statuses via 'bd config set status.custom')", node.Key, node.Status, validStatusList(customStatuses))
-	}
-	if node.Priority != nil && (*node.Priority < 0 || *node.Priority > 4) {
-		return fmt.Errorf("node %q: invalid priority %d (must be between 0 and 4)", node.Key, *node.Priority)
-	}
-	if node.EstimatedMinutes != nil && *node.EstimatedMinutes < 0 {
-		return fmt.Errorf("node %q: estimated_minutes must be non-negative", node.Key)
 	}
 	if node.WispType != "" && !types.WispType(node.WispType).IsValid() {
 		return fmt.Errorf("node %q: invalid wisp_type %q (must be heartbeat, ping, patrol, gc_report, recovery, error, or escalation)", node.Key, node.WispType)
@@ -635,13 +598,21 @@ func validateGraphApplyNodeFields(node GraphApplyNode, customStatuses []string) 
 	if node.MolType != "" && !types.MolType(node.MolType).IsValid() {
 		return fmt.Errorf("node %q: invalid mol_type %q (must be swarm, patrol, or work)", node.Key, node.MolType)
 	}
-	// Node-level ephemeral+no_history conflicts: graphApplyNodeStorageClass
-	// owns the rule; zero opts resolves to the node's own fields.
-	if _, _, err := graphApplyNodeStorageClass(node, GraphApplyOptions{}); err != nil {
-		return err
-	}
 	if (node.EventKind != "" || node.Actor != "" || node.Target != "" || node.Payload != "") && node.Type != string(types.TypeEvent) {
 		return fmt.Errorf("node %q: event_kind, actor, target, and payload require type %q", node.Key, types.TypeEvent)
+	}
+	// Issue-model rules (priority range, estimate sign, title cap, metadata
+	// JSON, ephemeral/no_history exclusivity, ...) come from the shared
+	// validator, run against the same materialized issue the apply path
+	// stores, so plan-time and insert-time validation cannot drift. Zero opts
+	// resolves storage class from the node's own fields; effective conflicts
+	// with the CLI flags are caught by validateGraphApplyStorageClasses.
+	issue, err := graphApplyNodeIssue(node, GraphApplyOptions{}, "", "")
+	if err != nil {
+		return err
+	}
+	if err := issue.ValidateWithCustom(customStatuses, customTypes); err != nil {
+		return fmt.Errorf("node %q: %w", node.Key, err)
 	}
 	return nil
 }
@@ -689,6 +660,18 @@ func validateGraphApplyExplicitIDPrefixes(plan *GraphApplyPlan, dbPrefix, allowe
 func graphPlanHasExplicitIDs(plan *GraphApplyPlan) bool {
 	for _, node := range plan.Nodes {
 		if node.ID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// graphPlanHasStatuses reports whether any plan node sets an initial status,
+// so callers can skip loading custom-status config for the common case
+// (statuses are only consulted for non-empty, non-builtin values).
+func graphPlanHasStatuses(plan *GraphApplyPlan) bool {
+	for _, node := range plan.Nodes {
+		if node.Status != "" {
 			return true
 		}
 	}

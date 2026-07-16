@@ -121,7 +121,7 @@ func TestBuildCreateIssueFromInput_ExplicitStatusWinsOverDefer(t *testing.T) {
 // so unit tests can exercise graphApplyNodeIssue with createInput-level opts.
 func nodeIssueFromInput(t *testing.T, node GraphApplyNode, in createInput) *types.Issue {
 	t.Helper()
-	issue, err := graphApplyNodeIssue(node, GraphApplyOptions{Ephemeral: in.ephemeral, NoHistory: in.noHistory}, in.createdBy, in.owner)
+	issue, err := graphApplyNodeIssue(node, in.graphApplyOptions(), in.createdBy, in.owner)
 	if err != nil {
 		t.Fatalf("graphApplyNodeIssue: %v", err)
 	}
@@ -288,14 +288,11 @@ func TestBuildDomainGraphPlan(t *testing.T) {
 		},
 	}
 
-	got, useWisp, err := buildDomainGraphPlan(plan, createInput{createdBy: "t"})
+	got, err := buildDomainGraphPlan(plan, createInput{createdBy: "t"})
 	if err != nil {
 		t.Fatalf("buildDomainGraphPlan: %v", err)
 	}
 
-	if useWisp {
-		t.Errorf("useWisp = true for a durable plan")
-	}
 	if len(got.Nodes) != 2 {
 		t.Fatalf("nodes len = %d", len(got.Nodes))
 	}

@@ -354,43 +354,6 @@ func TestWarnUnknownGraphFields_NoUnknownsIsSilent(t *testing.T) {
 	}
 }
 
-// TestKnownGraphFieldSetsMatchStructTags is a guardrail: the
-// knownGraphPlanFields / knownGraphNodeFields / knownGraphEdgeFields sets
-// must match the json tags on the corresponding structs so that adding a
-// new field on the schema doesn't silently re-introduce the false-positive
-// warning that GH#3367 was trying to remove. Reflection lets us spot drift
-// at test time without forcing manual upkeep on the schema author.
-func TestKnownGraphFieldSetsMatchStructTags(t *testing.T) {
-	check := func(name string, sample interface{}, known map[string]struct{}) {
-		t.Helper()
-		typ := reflect.TypeOf(sample)
-		tagged := make(map[string]struct{})
-		for i := 0; i < typ.NumField(); i++ {
-			tag := typ.Field(i).Tag.Get("json")
-			if tag == "" || tag == "-" {
-				continue
-			}
-			if comma := strings.IndexByte(tag, ','); comma >= 0 {
-				tag = tag[:comma]
-			}
-			tagged[tag] = struct{}{}
-		}
-		for k := range tagged {
-			if _, ok := known[k]; !ok {
-				t.Errorf("%s: json tag %q present on struct but missing from known set (would be flagged as unknown)", name, k)
-			}
-		}
-		for k := range known {
-			if _, ok := tagged[k]; !ok {
-				t.Errorf("%s: %q in known set but not on struct (stale entry)", name, k)
-			}
-		}
-	}
-	check("GraphApplyPlan", GraphApplyPlan{}, knownGraphPlanFields)
-	check("GraphApplyNode", GraphApplyNode{}, knownGraphNodeFields)
-	check("GraphApplyEdge", GraphApplyEdge{}, knownGraphEdgeFields)
-}
-
 // TestEmitGraphApplyDryRun_Counts verifies the dry-run preview reports the
 // node count, edge count, and parent-link count without performing any
 // writes. Captures stdout (the dry-run path writes to stdout, with warnings
@@ -728,7 +691,7 @@ func TestValidateGraphApplyPlanNodeFieldRules(t *testing.T) {
 		{name: "custom status accepted", customStatuses: []string{"triage"}, mutate: func(n *GraphApplyNode) { n.Status = "triage" }},
 		{name: "custom status rejected without config", mutate: func(n *GraphApplyNode) { n.Status = "triage" }, wantErr: "invalid status"},
 		{name: "negative estimate", mutate: func(n *GraphApplyNode) { n.EstimatedMinutes = &neg }, wantErr: "estimated_minutes"},
-		{name: "priority out of range", mutate: func(n *GraphApplyNode) { p := 9; n.Priority = &p }, wantErr: "invalid priority"},
+		{name: "priority out of range", mutate: func(n *GraphApplyNode) { p := 9; n.Priority = &p }, wantErr: "priority must be between 0 and 4"},
 		{name: "priority bounds accepted", mutate: func(n *GraphApplyNode) { p := 0; n.Priority = &p }},
 		{name: "invalid wisp_type", mutate: func(n *GraphApplyNode) { n.WispType = "bogus" }, wantErr: "invalid wisp_type"},
 		{name: "valid wisp_type", mutate: func(n *GraphApplyNode) { n.WispType = "heartbeat" }},
