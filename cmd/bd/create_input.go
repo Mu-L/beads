@@ -188,14 +188,14 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	if molTypeStr, _ := cmd.Flags().GetString("mol-type"); molTypeStr != "" {
 		mt := types.MolType(molTypeStr)
 		if !mt.IsValid() {
-			return in, HandleError("invalid mol-type %q (must be swarm, patrol, or work)", molTypeStr)
+			return in, HandleError("invalid mol-type %q (must be %s)", molTypeStr, types.ValidMolTypeNames())
 		}
 		in.molType = mt
 	}
 	if wispTypeStr, _ := cmd.Flags().GetString("wisp-type"); wispTypeStr != "" {
 		wt := types.WispType(wispTypeStr)
 		if !wt.IsValid() {
-			return in, HandleError("invalid wisp-type %q (must be heartbeat, ping, patrol, gc_report, recovery, error, or escalation)", wispTypeStr)
+			return in, HandleError("invalid wisp-type %q (must be %s)", wispTypeStr, types.ValidWispTypeNames())
 		}
 		in.wispType = wt
 	}

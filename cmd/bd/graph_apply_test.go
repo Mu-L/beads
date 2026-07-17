@@ -50,7 +50,7 @@ func TestDocsGraphPlanExampleValidates(t *testing.T) {
 	if err := validateGraphApplyPlan(&plan, nil, nil); err != nil {
 		t.Errorf("documented example rejected by validator: %v", err)
 	}
-	if err := validateGraphApplyStorageClasses(&plan, GraphApplyOptions{}, false); err != nil {
+	if _, err := validateGraphApplyStorageClasses(&plan, GraphApplyOptions{}, false); err != nil {
 		t.Errorf("documented example rejected by storage-class validation: %v", err)
 	}
 }
@@ -754,6 +754,7 @@ func TestValidateGraphApplyPlanEdgeGateRules(t *testing.T) {
 		{name: "spawner_key and spawner_id conflict", edge: GraphApplyEdge{FromKey: "gate", ToKey: "spawner", Type: "waits-for", SpawnerKey: "spawner", SpawnerID: "bd-x"}, wantErr: "cannot specify both"},
 		{name: "unknown spawner_key", edge: GraphApplyEdge{FromKey: "gate", ToKey: "spawner", Type: "waits-for", SpawnerKey: "ghost"}, wantErr: "spawner key"},
 		{name: "spawner_key must match to_key", edge: GraphApplyEdge{FromKey: "gate", ToKey: "spawner", Type: "waits-for", SpawnerKey: "gate"}, wantErr: "must match to_key"},
+		{name: "spawner_key with ambiguous to_id rejected", edge: GraphApplyEdge{FromKey: "gate", ToKey: "spawner", ToID: "bd-ext1", Type: "waits-for", SpawnerKey: "spawner"}, wantErr: "cannot be combined with to_id"},
 		{name: "spawner_id must match to_id", edge: GraphApplyEdge{FromKey: "gate", ToID: "bd-ext1", Type: "waits-for", SpawnerID: "bd-other"}, wantErr: "must match to_id"},
 		{name: "matching spawner_id accepted", edge: GraphApplyEdge{FromKey: "gate", ToID: "bd-ext1", Type: "waits-for", SpawnerID: "bd-ext1"}},
 		{name: "valid gated waits-for edge", edge: GraphApplyEdge{FromKey: "gate", ToKey: "spawner", Type: "waits-for", Gate: "any-children", SpawnerKey: "spawner"}},
@@ -869,19 +870,32 @@ func TestValidateGraphApplyStorageClasses(t *testing.T) {
 	}}
 
 	t.Run("effective flag+node conflict caught at validation time", func(t *testing.T) {
-		err := validateGraphApplyStorageClasses(plan, GraphApplyOptions{Ephemeral: true}, false)
+		_, err := validateGraphApplyStorageClasses(plan, GraphApplyOptions{Ephemeral: true}, false)
 		if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 			t.Fatalf("expected effective ephemeral+no_history conflict, got %v", err)
 		}
 	})
 
 	t.Run("mixed storage classes rejected only when uniformity is required", func(t *testing.T) {
-		if err := validateGraphApplyStorageClasses(plan, GraphApplyOptions{}, false); err != nil {
+		if _, err := validateGraphApplyStorageClasses(plan, GraphApplyOptions{}, false); err != nil {
 			t.Fatalf("embedded mode allows mixed plans, got %v", err)
 		}
-		err := validateGraphApplyStorageClasses(plan, GraphApplyOptions{}, true)
+		_, err := validateGraphApplyStorageClasses(plan, GraphApplyOptions{}, true)
 		if err == nil || !strings.Contains(err.Error(), "uniform") {
 			t.Fatalf("expected uniformity error in proxied mode, got %v", err)
+		}
+	})
+
+	t.Run("resolved useWisp reported from node 0", func(t *testing.T) {
+		useWisp, err := validateGraphApplyStorageClasses(&GraphApplyPlan{Nodes: []GraphApplyNode{
+			{Key: "a", Title: "A", NoHistory: &on},
+			{Key: "b", Title: "B", NoHistory: &on},
+		}}, GraphApplyOptions{}, true)
+		if err != nil {
+			t.Fatalf("uniform wisp plan rejected: %v", err)
+		}
+		if !useWisp {
+			t.Error("useWisp = false, want true for no_history plan")
 		}
 	})
 }

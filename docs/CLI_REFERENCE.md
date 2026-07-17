@@ -595,7 +595,8 @@ Edge notes:
   `--waits-for`/`--waits-for-gate`. The `to` endpoint of a `waits-for` edge
   *is* the spawner (gate evaluation watches its children), so `spawner_key`
   must match `to_key` and `spawner_id` must match `to_id`; they exist to make
-  plans self-documenting.
+  plans self-documenting. Since an explicit `to_id` overrides `to_key` as the
+  target, `spawner_key` cannot be combined with `to_id` — use `spawner_id`.
 - Edges with ready-work-affecting types (`blocks`, `waits-for`, …) may not
   duplicate or reverse a `parent_key`/`parent_id` relationship, and a parent
   may not be connected to its own child through them.

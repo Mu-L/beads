@@ -673,6 +673,12 @@ func (m MolType) IsValid() bool {
 	return false
 }
 
+// ValidMolTypeNames enumerates the accepted mol-type values for error
+// messages, kept next to MolType.IsValid so the two cannot drift.
+func ValidMolTypeNames() string {
+	return joinNamesWithOr(string(MolTypeSwarm), string(MolTypePatrol), string(MolTypeWork))
+}
+
 // WispType categorizes ephemeral wisps for TTL-based compaction (gt-9br)
 type WispType string
 
@@ -700,6 +706,21 @@ func (w WispType) IsValid() bool {
 		return true // empty is valid (uses default TTL)
 	}
 	return false
+}
+
+// ValidWispTypeNames enumerates the accepted wisp-type values for error
+// messages, kept next to WispType.IsValid so the two cannot drift.
+func ValidWispTypeNames() string {
+	return joinNamesWithOr(string(WispTypeHeartbeat), string(WispTypePing), string(WispTypePatrol),
+		string(WispTypeGCReport), string(WispTypeRecovery), string(WispTypeError), string(WispTypeEscalation))
+}
+
+// joinNamesWithOr formats a value list as "a, b, or c" for error messages.
+func joinNamesWithOr(names ...string) string {
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + ", or " + names[len(names)-1]
 }
 
 // WorkType categorizes how work assignment operates for a bead (Decision 006)
@@ -908,6 +929,53 @@ func BuildWaitsForEdgeMeta(gate, spawnerKey, spawnerID string, keyToID map[strin
 		spawnerID = resolved
 	}
 	return BuildWaitsForMeta(gate, spawnerID)
+}
+
+// NewGraphEdgeDependency builds the dependency record for a graph plan edge,
+// shared by the embedded and domain apply paths so they cannot drift. Every
+// waits-for edge gets gate metadata — the SQL gate evaluation treats a
+// missing gate as NULL, not as the all-children default, so '{}' or empty
+// metadata must never be stored for waits-for dependencies.
+func NewGraphEdgeDependency(fromID, toID string, depType DependencyType, gate, spawnerKey, spawnerID, threadID string, keyToID map[string]string) (*Dependency, error) {
+	dep := &Dependency{
+		IssueID:     fromID,
+		DependsOnID: toID,
+		Type:        depType,
+		ThreadID:    threadID,
+	}
+	if depType == DepWaitsFor {
+		meta, err := BuildWaitsForEdgeMeta(gate, spawnerKey, spawnerID, keyToID)
+		if err != nil {
+			return nil, fmt.Errorf("serializing waits-for metadata: %w", err)
+		}
+		dep.Metadata = meta
+	}
+	return dep, nil
+}
+
+// MergeMetadataRefs merges resolved metadata_refs into an issue's existing
+// metadata JSON: each refs entry maps a metadata key to a plan-local node
+// key, which is replaced with its minted ID from keyToID. Shared by the
+// embedded and domain graph-apply paths.
+func MergeMetadataRefs(existing json.RawMessage, refs map[string]string, keyToID map[string]string) (json.RawMessage, error) {
+	merged := make(map[string]json.RawMessage, len(refs))
+	if len(existing) > 0 {
+		if err := json.Unmarshal(existing, &merged); err != nil {
+			return nil, fmt.Errorf("re-parsing metadata: %w", err)
+		}
+	}
+	for metaKey, refKey := range refs {
+		resolvedID, ok := keyToID[refKey]
+		if !ok {
+			return nil, fmt.Errorf("metadata_ref %q references unknown key %q", metaKey, refKey)
+		}
+		idJSON, err := json.Marshal(resolvedID)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling metadata ref %q: %w", metaKey, err)
+		}
+		merged[metaKey] = idJSON
+	}
+	return json.Marshal(merged)
 }
 
 // ParseWaitsForGateMetadata extracts the waits-for gate type from dependency metadata.

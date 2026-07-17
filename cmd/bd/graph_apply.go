@@ -285,7 +285,9 @@ func warnUnknownGraphFields(w io.Writer, unknown map[string][]string) []string {
 	}
 	sort.Strings(hintFields)
 	for _, f := range hintFields {
-		if hint, ok := graphFieldHints[f]; ok {
+		// Lowercase to match unknownKeys, which reports the original-case
+		// spelling against the all-lowercase hint map.
+		if hint, ok := graphFieldHints[strings.ToLower(f)]; ok {
 			fmt.Fprintf(w, "  hint: %q is not part of the schema; %s\n", f, hint)
 		}
 	}
@@ -338,7 +340,7 @@ func createIssuesFromGraph(planFile string, dryRun bool, opts GraphApplyOptions)
 	if err := validateGraphApplyPlan(&plan, loadEmbeddedCustomTypes(), customStatuses); err != nil {
 		return HandleErrorRespectJSON("invalid graph plan: %v", err)
 	}
-	if err := validateGraphApplyStorageClasses(&plan, opts, false); err != nil {
+	if _, err := validateGraphApplyStorageClasses(&plan, opts, false); err != nil {
 		return HandleErrorRespectJSON("invalid graph plan: %v", err)
 	}
 	if graphPlanHasExplicitIDs(&plan) {
@@ -563,6 +565,11 @@ func validateGraphApplyPlan(plan *GraphApplyPlan, customTypes, customStatuses []
 			// Gate evaluation resolves the spawner from the dependency target
 			// (depends_on_id), never from metadata, so a spawner that differs
 			// from the to endpoint would be silently ignored at runtime.
+			// An explicit to_id wins over to_key at apply time (resolveEdgeRef),
+			// so a key-named spawner can never match an ID-resolved target.
+			if edge.SpawnerKey != "" && edge.ToID != "" {
+				return fmt.Errorf("edge %d: spawner_key %q cannot be combined with to_id %q (to_id overrides to_key as the waits-for target; use spawner_id)", i, edge.SpawnerKey, edge.ToID)
+			}
 			if edge.SpawnerKey != "" && edge.SpawnerKey != edge.ToKey {
 				return fmt.Errorf("edge %d: spawner_key %q must match to_key %q (the waits-for target is the spawner)", i, edge.SpawnerKey, edge.ToKey)
 			}
@@ -593,10 +600,10 @@ func validateGraphApplyNodeFields(node GraphApplyNode, customTypes, customStatus
 		return fmt.Errorf("node %q: invalid status %q (valid: %s; configure custom statuses via 'bd config set status.custom')", node.Key, node.Status, validStatusList(customStatuses))
 	}
 	if node.WispType != "" && !types.WispType(node.WispType).IsValid() {
-		return fmt.Errorf("node %q: invalid wisp_type %q (must be heartbeat, ping, patrol, gc_report, recovery, error, or escalation)", node.Key, node.WispType)
+		return fmt.Errorf("node %q: invalid wisp_type %q (must be %s)", node.Key, node.WispType, types.ValidWispTypeNames())
 	}
 	if node.MolType != "" && !types.MolType(node.MolType).IsValid() {
-		return fmt.Errorf("node %q: invalid mol_type %q (must be swarm, patrol, or work)", node.Key, node.MolType)
+		return fmt.Errorf("node %q: invalid mol_type %q (must be %s)", node.Key, node.MolType, types.ValidMolTypeNames())
 	}
 	if (node.EventKind != "" || node.Actor != "" || node.Target != "" || node.Payload != "") && node.Type != string(types.TypeEvent) {
 		return fmt.Errorf("node %q: event_kind, actor, target, and payload require type %q", node.Key, types.TypeEvent)
@@ -622,22 +629,22 @@ func validateGraphApplyNodeFields(node GraphApplyNode, customTypes, customStatus
 // conflicts surface at validation/dry-run time instead of mid-apply. When
 // requireUniform is set (proxied-server mode, where domain graph creation
 // routes the whole plan to a single table), mixed durable/wisp plans are
-// rejected as well.
-func validateGraphApplyStorageClasses(plan *GraphApplyPlan, opts GraphApplyOptions, requireUniform bool) error {
-	var useWisp bool
+// rejected as well. The returned useWisp reports node 0's effective class —
+// under requireUniform, the routing decision for the whole plan.
+func validateGraphApplyStorageClasses(plan *GraphApplyPlan, opts GraphApplyOptions, requireUniform bool) (useWisp bool, err error) {
 	for i, node := range plan.Nodes {
 		ephemeral, noHistory, err := graphApplyNodeStorageClass(node, opts)
 		if err != nil {
-			return err
+			return false, err
 		}
 		nodeWisp := ephemeral || noHistory
 		if i == 0 {
 			useWisp = nodeWisp
 		} else if requireUniform && nodeWisp != useWisp {
-			return fmt.Errorf("plan mixes durable and wisp storage classes (node %q vs node %q): effective ephemeral/no_history must be uniform across the plan in proxied-server mode", plan.Nodes[0].Key, node.Key)
+			return false, fmt.Errorf("plan mixes durable and wisp storage classes (node %q vs node %q): effective ephemeral/no_history must be uniform across the plan in proxied-server mode", plan.Nodes[0].Key, node.Key)
 		}
 	}
-	return nil
+	return useWisp, nil
 }
 
 // validateGraphApplyExplicitIDPrefixes mirrors the `bd create --id` prefix
@@ -838,25 +845,14 @@ func graphApplyNodeStorageClass(node GraphApplyNode, opts GraphApplyOptions) (ep
 	return ephemeral, noHistory, nil
 }
 
-// graphApplyEdgeDependency builds the dependency record for an edge, including
-// waits-for gate metadata (types.WaitsForMeta) and conversation thread IDs.
-// keyToID maps plan-local node keys to their minted issue IDs. Every waits-for
-// edge gets gate metadata — the SQL gate evaluation treats a missing gate as
-// NULL, not as the all-children default, so '{}' metadata must never be stored.
+// graphApplyEdgeDependency builds the dependency record for an edge via the
+// shared types.NewGraphEdgeDependency (also used by the domain apply path).
+// keyToID maps plan-local node keys to their minted issue IDs.
 func graphApplyEdgeDependency(edge GraphApplyEdge, fromID, toID string, depType types.DependencyType, keyToID map[string]string) (*types.Dependency, error) {
-	dep := &types.Dependency{
-		IssueID:     fromID,
-		DependsOnID: toID,
-		Type:        depType,
+	dep, err := types.NewGraphEdgeDependency(fromID, toID, depType, edge.Gate, edge.SpawnerKey, edge.SpawnerID, edge.ThreadID, keyToID)
+	if err != nil {
+		return nil, fmt.Errorf("edge %s->%s: %w", fromID, toID, err)
 	}
-	if depType == types.DepWaitsFor {
-		meta, err := types.BuildWaitsForEdgeMeta(edge.Gate, edge.SpawnerKey, edge.SpawnerID, keyToID)
-		if err != nil {
-			return nil, fmt.Errorf("edge %s->%s: serializing waits-for metadata: %w", fromID, toID, err)
-		}
-		dep.Metadata = meta
-	}
-	dep.ThreadID = edge.ThreadID
 	return dep, nil
 }
 
@@ -909,25 +905,12 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 			if len(node.MetadataRefs) == 0 {
 				continue
 			}
-			mergedMeta := make(map[string]json.RawMessage)
-			if issues[i].Metadata != nil {
-				if err := json.Unmarshal(issues[i].Metadata, &mergedMeta); err != nil {
-					return fmt.Errorf("node %q: re-parsing metadata: %w", node.Key, err)
-				}
-			}
-			for metaKey, refKey := range node.MetadataRefs {
-				idJSON, err := json.Marshal(keyToID[refKey])
-				if err != nil {
-					return fmt.Errorf("node %q: marshaling metadata ref %q: %w", node.Key, metaKey, err)
-				}
-				mergedMeta[metaKey] = idJSON
-			}
-			metaJSON, err := json.Marshal(mergedMeta)
+			metaJSON, err := types.MergeMetadataRefs(issues[i].Metadata, node.MetadataRefs, keyToID)
 			if err != nil {
-				return fmt.Errorf("node %q: marshaling updated metadata: %w", node.Key, err)
+				return fmt.Errorf("node %q: %w", node.Key, err)
 			}
 			updates := map[string]interface{}{
-				"metadata": json.RawMessage(metaJSON),
+				"metadata": metaJSON,
 			}
 			if err := tx.UpdateIssue(ctx, issues[i].ID, updates, actor); err != nil {
 				return fmt.Errorf("node %q: updating metadata refs: %w", node.Key, err)

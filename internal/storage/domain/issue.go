@@ -2,7 +2,6 @@ package domain
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -804,28 +803,11 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 		if len(node.MetadataRefs) == 0 {
 			continue
 		}
-		merged := make(map[string]json.RawMessage, len(node.MetadataRefs))
-		if len(node.Issue.Metadata) > 0 {
-			if err := json.Unmarshal(node.Issue.Metadata, &merged); err != nil {
-				return GraphApplyResult{}, fmt.Errorf("applyGraph: node %q: re-parsing metadata: %w", node.Key, err)
-			}
-		}
-		for metaKey, refKey := range node.MetadataRefs {
-			resolvedID, ok := keyToID[refKey]
-			if !ok {
-				return GraphApplyResult{}, fmt.Errorf("applyGraph: node %q: metadata_ref %q references unknown key %q", node.Key, metaKey, refKey)
-			}
-			idJSON, err := json.Marshal(resolvedID)
-			if err != nil {
-				return GraphApplyResult{}, fmt.Errorf("applyGraph: node %q: marshaling metadata ref %q: %w", node.Key, metaKey, err)
-			}
-			merged[metaKey] = idJSON
-		}
-		metaJSON, err := json.Marshal(merged)
+		metaJSON, err := types.MergeMetadataRefs(node.Issue.Metadata, node.MetadataRefs, keyToID)
 		if err != nil {
-			return GraphApplyResult{}, fmt.Errorf("applyGraph: node %q: marshaling merged metadata: %w", node.Key, err)
+			return GraphApplyResult{}, fmt.Errorf("applyGraph: node %q: %w", node.Key, err)
 		}
-		updates := map[string]any{"metadata": json.RawMessage(metaJSON)}
+		updates := map[string]any{"metadata": metaJSON}
 		if err := u.issueRepo.Update(ctx, keyToID[node.Key], updates, actor, IssueTableOpts{UseWispsTable: useWisp}); err != nil {
 			return GraphApplyResult{}, fmt.Errorf("applyGraph: node %q: updating metadata refs: %w", node.Key, err)
 		}
@@ -929,18 +911,9 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d %s->%s creates a blocking reverse of a parent-child relationship", i, fromID, toID)
 			}
 
-			dep := &types.Dependency{
-				IssueID:     fromID,
-				DependsOnID: toID,
-				Type:        depType,
-				ThreadID:    edge.ThreadID,
-			}
-			if depType == types.DepWaitsFor {
-				meta, err := types.BuildWaitsForEdgeMeta(edge.Gate, edge.SpawnerKey, edge.SpawnerID, keyToID)
-				if err != nil {
-					return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d: serializing waits-for metadata: %w", i, err)
-				}
-				dep.Metadata = meta
+			dep, err := types.NewGraphEdgeDependency(fromID, toID, depType, edge.Gate, edge.SpawnerKey, edge.SpawnerID, edge.ThreadID, keyToID)
+			if err != nil {
+				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d: %w", i, err)
 			}
 			if err := u.depRepo.Insert(ctx, dep, actor, DepInsertOpts{UseWispsTable: useWisp}); err != nil {
 				return GraphApplyResult{}, fmt.Errorf("applyGraph: edge %d (%s -> %s): %w", i, fromID, toID, err)
