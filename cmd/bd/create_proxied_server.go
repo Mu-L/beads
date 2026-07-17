@@ -472,11 +472,10 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 	return nil
 }
 
-// validateProxiedGraphPlan runs the full plan validation for proxied-server
-// mode: the shared plan checks, effective storage classes (uniform, since
-// domain graph creation routes the whole plan to one table), and explicit-ID
-// prefix checks against the server's prefix config, mirroring single create.
-// The returned useWisp is the plan-wide table routing decision.
+// validateProxiedGraphPlan runs full plan validation for proxied-server mode:
+// shared plan checks, uniform storage class (proxied routes the whole plan to
+// one table), and explicit-ID prefix checks against the server's config. The
+// returned useWisp is the plan-wide table routing decision.
 func validateProxiedGraphPlan(plan *GraphApplyPlan, in createInput, cctx domain.CreateContext) (useWisp bool, err error) {
 	var customStatuses []string
 	if graphPlanHasStatuses(plan) {

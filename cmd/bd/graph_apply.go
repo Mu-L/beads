@@ -131,11 +131,8 @@ type GraphApplyDryRunRow struct {
 
 const graphApplyDryRunTransactionValidationNote = "dry-run validates the graph structure only; live create may still reject parent-child blocking paths after resolving stored dependencies"
 
-// The known-field sets list the JSON keys recognized on each plan struct. Any
-// other keys produce a warning so users can spot schema typos (e.g. when a
-// plan uses a sibling tool's format) instead of having fields silently dropped
-// by encoding/json. Derived from the json tags so they can't drift as the
-// schema grows. (GH#3367)
+// Known-field sets list the JSON keys recognized on each plan struct; unknown
+// keys warn about schema typos. Derived from json tags so they can't drift. (GH#3367)
 var (
 	knownGraphPlanFields = jsonTagSet(reflect.TypeOf(GraphApplyPlan{}))
 	knownGraphNodeFields = jsonTagSet(reflect.TypeOf(GraphApplyNode{}))
@@ -236,10 +233,8 @@ func detectUnknownGraphFields(rawData []byte) map[string][]string {
 }
 
 // unknownKeys returns the keys present in have that are not in known, sorted
-// alphabetically for deterministic output. Matching is case-insensitive
-// because encoding/json binds case-variant keys (e.g. "Pinned") to the
-// lowercase field anyway — reporting those as "silently dropped" would be
-// false.
+// alphabetically for deterministic output. Matching is case-insensitive because
+// encoding/json binds case-variant keys (e.g. "Pinned") to the lowercase field.
 func unknownKeys(have map[string]json.RawMessage, known map[string]struct{}) []string {
 	var unknown []string
 	for k := range have {
@@ -381,10 +376,9 @@ func emitGraphApplyDryRun(plan *GraphApplyPlan, opts GraphApplyOptions) error {
 	parentDeps := 0
 	rows := make([]GraphApplyDryRunRow, 0, len(plan.Nodes))
 	for _, node := range plan.Nodes {
-		// Derive the preview through the same materialization the apply path
-		// uses so type/priority/status defaults can't drift. (Time-sensitive:
-		// a defer_until passing between dry-run and apply still shifts the
-		// real status to open.)
+		// Preview via the same materialization the apply path uses so
+		// type/priority/status defaults can't drift. (A defer_until passing
+		// between dry-run and apply still shifts the real status to open.)
 		issue, err := graphApplyNodeIssue(node, opts, "", "")
 		if err != nil {
 			return HandleErrorRespectJSON("invalid graph plan: %v", err)
@@ -466,9 +460,8 @@ func validateGraphApplyPlan(plan *GraphApplyPlan, customTypes, customStatuses []
 			return fmt.Errorf("node %q has empty title", node.Key)
 		}
 		if node.Type != "" {
-			// Accept aliases (feat, adr, ms, ...) the same way single-issue
-			// bd create does: it normalizes before storing, so a type is
-			// valid if either its raw or normalized form is known.
+			// Accept aliases (feat, adr, ms, ...) like single-issue bd create:
+			// valid if either the raw or normalized form is known.
 			it := types.IssueType(node.Type)
 			if !it.IsValidWithCustom(customTypes) && !it.Normalize().IsValidWithCustom(customTypes) {
 				return fmt.Errorf("node %q: invalid type %q", node.Key, node.Type)
@@ -562,11 +555,10 @@ func validateGraphApplyPlan(plan *GraphApplyPlan, customTypes, customStatuses []
 			if edge.SpawnerKey != "" && !seenKeys[edge.SpawnerKey] {
 				return fmt.Errorf("edge %d: spawner key %q not found in plan", i, edge.SpawnerKey)
 			}
-			// Gate evaluation resolves the spawner from the dependency target
-			// (depends_on_id), never from metadata, so a spawner that differs
-			// from the to endpoint would be silently ignored at runtime.
-			// An explicit to_id wins over to_key at apply time (resolveEdgeRef),
-			// so a key-named spawner can never match an ID-resolved target.
+			// Gate evaluation reads the spawner from the dependency target
+			// (depends_on_id), not metadata, so the spawner must equal the to
+			// endpoint. Since to_id overrides to_key at apply time
+			// (resolveEdgeRef), a key-named spawner can't be combined with to_id.
 			if edge.SpawnerKey != "" && edge.ToID != "" {
 				return fmt.Errorf("edge %d: spawner_key %q cannot be combined with to_id %q (to_id overrides to_key as the waits-for target; use spawner_id)", i, edge.SpawnerKey, edge.ToID)
 			}
@@ -608,12 +600,11 @@ func validateGraphApplyNodeFields(node GraphApplyNode, customTypes, customStatus
 	if (node.EventKind != "" || node.Actor != "" || node.Target != "" || node.Payload != "") && node.Type != string(types.TypeEvent) {
 		return fmt.Errorf("node %q: event_kind, actor, target, and payload require type %q", node.Key, types.TypeEvent)
 	}
-	// Issue-model rules (priority range, estimate sign, title cap, metadata
-	// JSON, ephemeral/no_history exclusivity, ...) come from the shared
-	// validator, run against the same materialized issue the apply path
-	// stores, so plan-time and insert-time validation cannot drift. Zero opts
-	// resolves storage class from the node's own fields; effective conflicts
-	// with the CLI flags are caught by validateGraphApplyStorageClasses.
+	// Issue-model rules (priority range, estimate sign, metadata JSON, ...) run
+	// against the same materialized issue the apply path stores, so plan-time
+	// and insert-time validation can't drift. Zero opts resolves storage class
+	// from the node alone; flag conflicts are caught by
+	// validateGraphApplyStorageClasses.
 	issue, err := graphApplyNodeIssue(node, GraphApplyOptions{}, "", "")
 	if err != nil {
 		return err
@@ -624,13 +615,12 @@ func validateGraphApplyNodeFields(node GraphApplyNode, customTypes, customStatus
 	return nil
 }
 
-// validateGraphApplyStorageClasses resolves each node's effective storage
-// class (per-node overrides combined with the plan-wide CLI flags) so that
-// conflicts surface at validation/dry-run time instead of mid-apply. When
-// requireUniform is set (proxied-server mode, where domain graph creation
-// routes the whole plan to a single table), mixed durable/wisp plans are
-// rejected as well. The returned useWisp reports node 0's effective class —
-// under requireUniform, the routing decision for the whole plan.
+// validateGraphApplyStorageClasses resolves each node's effective storage class
+// (per-node overrides combined with the CLI flags) so conflicts surface at
+// validation time instead of mid-apply. When requireUniform is set (proxied
+// mode, which routes the whole plan to one table), mixed durable/wisp plans are
+// also rejected. The returned useWisp is node 0's class — under requireUniform,
+// the routing decision for the whole plan.
 func validateGraphApplyStorageClasses(plan *GraphApplyPlan, opts GraphApplyOptions, requireUniform bool) (useWisp bool, err error) {
 	for i, node := range plan.Nodes {
 		ephemeral, noHistory, err := graphApplyNodeStorageClass(node, opts)
@@ -768,7 +758,7 @@ func graphApplyNodeIssue(node GraphApplyNode, opts GraphApplyOptions, createdBy,
 		metadataJSON = raw
 	}
 
-	priority := 2 // Default P2
+	priority := 2
 	if node.Priority != nil {
 		priority = *node.Priority
 	}
@@ -812,11 +802,8 @@ func graphApplyNodeIssue(node GraphApplyNode, opts GraphApplyOptions, createdBy,
 	if node.Status != "" {
 		issue.Status = types.Status(node.Status)
 	}
-	// Backfill status-coupled timestamps here rather than relying on storage:
-	// the embedded path gets closed_at from issueops.PrepareIssueForInsert,
-	// but the proxied domain insert performs no backfill, and neither path
-	// stamps started_at for issues born in_progress (ManageStartedAt only
-	// fires on later status updates).
+	// Backfill status-coupled timestamps: the proxied domain insert does no
+	// backfill, and neither path stamps started_at for issues born in_progress.
 	now := time.Now().UTC()
 	if issue.Status == types.StatusClosed && issue.ClosedAt == nil {
 		issue.ClosedAt = &now

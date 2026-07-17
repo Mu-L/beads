@@ -996,11 +996,10 @@ func readyPathDepType(t types.DependencyType) bool {
 	return t.AffectsReadyWork()
 }
 
-// resolveEdgeRef returns the ID for an edge endpoint: the explicit id when
-// set (an ID override wins over a plan-local key, matching the CLI embedded
-// path and TestValidateGraphApplyPlanIgnoresIDOverridesForLocalCycleValidation),
-// else the keyToID lookup. Returns "" when neither resolves, which the
-// caller should treat as a structural error.
+// resolveEdgeRef returns the ID for an edge endpoint: the explicit id when set
+// (an ID override wins over a plan-local key, matching the CLI embedded path),
+// else the keyToID lookup. Returns "" when neither resolves, which the caller
+// should treat as a structural error.
 func resolveEdgeRef(key, id string, keyToID map[string]string) string {
 	if id != "" {
 		return id
