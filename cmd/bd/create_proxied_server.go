@@ -25,15 +25,6 @@ func resolveProxiedCustomTypes(dbTypes []string) []string {
 	return config.GetCustomTypesFromYAML()
 }
 
-// resolveProxiedCustomStatuses mirrors loadEmbeddedCustomStatuses for
-// proxied-server mode: the server database is authoritative (that's where
-// 'bd config set status.custom' writes; it rides along in CreateContext).
-// No YAML fallback — statuses are store-only everywhere (single-issue
-// create, list filters), unlike custom types.
-func resolveProxiedCustomStatuses(cs []types.CustomStatus) []string {
-	return types.CustomStatusNames(cs)
-}
-
 func runCreateProxiedServer(cmd *cobra.Command, ctx context.Context, in createInput) error {
 	if in.repoOverrideSet {
 		return HandleError("--repo is not supported with --proxied-server")
@@ -472,8 +463,12 @@ func runCreateProxiedGraph(_ *cobra.Command, ctx context.Context, in createInput
 // returned useWisp is the plan-wide table routing decision.
 func validateProxiedGraphPlan(plan *GraphApplyPlan, in createInput, cctx domain.CreateContext) (useWisp bool, err error) {
 	cfg := graphPlanConfig{
-		customTypes:     resolveProxiedCustomTypes(cctx.CustomTypes),
-		customStatuses:  resolveProxiedCustomStatuses(cctx.CustomStatuses),
+		customTypes: resolveProxiedCustomTypes(cctx.CustomTypes),
+		// No YAML fallback for statuses — the server database is authoritative
+		// (that's where 'bd config set status.custom' writes) and statuses are
+		// store-only everywhere (single-issue create, list filters), unlike
+		// custom types.
+		customStatuses:  types.CustomStatusNames(cctx.CustomStatuses),
 		dbPrefix:        overlayYAMLPrefix(cctx.IssuePrefix),
 		allowedPrefixes: cctx.AllowedPrefixes,
 	}

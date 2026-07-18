@@ -69,6 +69,18 @@ func (in createInput) graphApplyOptions() GraphApplyOptions {
 	return GraphApplyOptions{Ephemeral: in.ephemeral, NoHistory: in.noHistory, Force: in.force}
 }
 
+// graphApplyOptionsFromFlags is the embedded-path projection of the plan-wide
+// flags, delegating to graphApplyOptions so both transports share one
+// flags→options mapping (the embedded create path reads flags directly
+// rather than through gatherCreateInput).
+func graphApplyOptionsFromFlags(cmd *cobra.Command) GraphApplyOptions {
+	var in createInput
+	in.ephemeral, _ = cmd.Flags().GetBool("ephemeral")
+	in.noHistory, _ = cmd.Flags().GetBool("no-history")
+	in.force, _ = cmd.Flags().GetBool("force")
+	return in.graphApplyOptions()
+}
+
 func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	in := createInput{}
 

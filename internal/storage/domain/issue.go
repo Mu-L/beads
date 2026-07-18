@@ -778,6 +778,12 @@ func (u *issueUseCaseImpl) applyGraph(ctx context.Context, plan GraphPlan, actor
 		if node.Issue == nil {
 			return GraphApplyResult{}, fmt.Errorf("applyGraph: node %d (key=%q) has nil Issue", i, node.Key)
 		}
+		// The whole plan routes to one table, so every node's storage class
+		// must match. The CLI pre-validates this; guard here too so other
+		// callers cannot route wisp-flagged issues into the durable table.
+		if nodeWisp := node.Issue.Ephemeral || node.Issue.NoHistory; nodeWisp != useWisp {
+			return GraphApplyResult{}, fmt.Errorf("applyGraph: node %q storage class (ephemeral=%t, no_history=%t) does not match plan routing (wisp=%t)", node.Key, node.Issue.Ephemeral, node.Issue.NoHistory, useWisp)
+		}
 
 		if node.AssignAfterCreate {
 			pendingAssignees[i] = node.Assignee

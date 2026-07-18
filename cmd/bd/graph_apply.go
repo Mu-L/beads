@@ -463,7 +463,7 @@ type graphPlanConfig struct {
 // explicit-ID prefix checks. The returned useWisp is node 0's storage class —
 // under requireUniform, the routing decision for the whole plan.
 func validateFullGraphPlan(plan *GraphApplyPlan, cfg graphPlanConfig, opts GraphApplyOptions, requireUniform bool) (useWisp bool, err error) {
-	if err := validateGraphApplyPlan(plan, cfg.customTypes, cfg.customStatuses); err != nil {
+	if err := validateGraphApplyPlan(plan, cfg.customTypes, cfg.customStatuses, opts); err != nil {
 		return false, err
 	}
 	useWisp, err = validateGraphApplyStorageClasses(plan, opts, requireUniform)
@@ -473,7 +473,7 @@ func validateFullGraphPlan(plan *GraphApplyPlan, cfg graphPlanConfig, opts Graph
 	return useWisp, validateGraphApplyExplicitIDPrefixes(plan, cfg.dbPrefix, cfg.allowedPrefixes, opts.Force)
 }
 
-func validateGraphApplyPlan(plan *GraphApplyPlan, customTypes, customStatuses []string) error {
+func validateGraphApplyPlan(plan *GraphApplyPlan, customTypes, customStatuses []string, opts GraphApplyOptions) error {
 	if len(plan.Nodes) == 0 {
 		return fmt.Errorf("plan has no nodes")
 	}
@@ -491,15 +491,7 @@ func validateGraphApplyPlan(plan *GraphApplyPlan, customTypes, customStatuses []
 		if node.Title == "" {
 			return fmt.Errorf("node %q has empty title", node.Key)
 		}
-		if node.Type != "" {
-			// Accept aliases (feat, adr, ms, ...) like single-issue bd create:
-			// valid if either the raw or normalized form is known.
-			it := types.IssueType(node.Type)
-			if !it.IsValidWithCustom(customTypes) && !it.Normalize().IsValidWithCustom(customTypes) {
-				return fmt.Errorf("node %q: invalid type %q", node.Key, node.Type)
-			}
-		}
-		if err := validateGraphApplyNodeFields(node, customTypes, customStatuses); err != nil {
+		if err := validateGraphApplyNodeFields(node, customTypes, customStatuses, opts); err != nil {
 			return err
 		}
 		if node.ID != "" {
@@ -607,7 +599,7 @@ func validateGraphApplyPlan(plan *GraphApplyPlan, customTypes, customStatuses []
 // validateGraphApplyNodeFields checks the single-node fields added for
 // bd-create parity, mirroring the flag-shape checks `bd create` applies
 // (config-gated template linting is not run on graph plans).
-func validateGraphApplyNodeFields(node GraphApplyNode, customTypes, customStatuses []string) error {
+func validateGraphApplyNodeFields(node GraphApplyNode, customTypes, customStatuses []string, opts GraphApplyOptions) error {
 	if node.ID != "" {
 		if _, err := validation.ValidateIDFormat(node.ID); err != nil {
 			return fmt.Errorf("node %q: %w", node.Key, err)
@@ -626,12 +618,10 @@ func validateGraphApplyNodeFields(node GraphApplyNode, customTypes, customStatus
 	if (node.EventKind != "" || node.Actor != "" || node.Target != "" || node.Payload != "") && node.Type != string(types.TypeEvent) {
 		return fmt.Errorf("node %q: event_kind, actor, target, and payload require type %q", node.Key, types.TypeEvent)
 	}
-	// Issue-model rules (priority range, estimate sign, metadata JSON, ...) run
-	// against the same materialized issue the apply path stores, so plan-time
-	// and insert-time validation can't drift. Zero opts resolves storage class
-	// from the node alone; flag conflicts are caught by
-	// validateGraphApplyStorageClasses.
-	issue, err := graphApplyNodeIssue(node, GraphApplyOptions{}, "", "")
+	// Issue-model rules (type validity, priority range, estimate sign,
+	// metadata JSON, ...) run against the same materialized issue the apply
+	// path stores, so plan-time and insert-time validation can't drift.
+	issue, err := graphApplyNodeIssue(node, opts, "", "")
 	if err != nil {
 		return err
 	}

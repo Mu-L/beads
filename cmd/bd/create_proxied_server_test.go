@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -368,6 +369,54 @@ func TestBuildDomainGraphPlan_AliasesAndDeps(t *testing.T) {
 	if b.Issue.EstimatedMinutes == nil || *b.Issue.EstimatedMinutes != 30 {
 		t.Errorf("estimated_minutes should win over the alias: %v", b.Issue.EstimatedMinutes)
 	}
+}
+
+// TestBuildDomainGraphPlanCoversEdgeFields pins the hand-maintained field
+// copies in buildDomainGraphPlan: every GraphApplyEdge and GraphApplyNodeDep
+// field must survive the projection into its domain counterpart. This is the
+// edge-side twin of TestGraphApplyNodeCoversCreateIssueParams — the proxied
+// path silently dropping fields (gate/spawner/thread, node deps) is the
+// regression class this branch fixes.
+func TestBuildDomainGraphPlanCoversEdgeFields(t *testing.T) {
+	fill := func(typ reflect.Type) reflect.Value {
+		v := reflect.New(typ).Elem()
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			if f.Type.Kind() != reflect.String {
+				t.Fatalf("%s field %s: unhandled kind %s; extend this parity test", typ.Name(), f.Name, f.Type.Kind())
+			}
+			v.Field(i).SetString(fmt.Sprintf("v%d", i))
+		}
+		return v
+	}
+	assertCopied := func(src reflect.Value, dst reflect.Value) {
+		typ := src.Type()
+		for i := 0; i < typ.NumField(); i++ {
+			name := typ.Field(i).Name
+			df := dst.FieldByName(name)
+			if !df.IsValid() {
+				t.Errorf("domain.%s has no field %q for %s.%s", dst.Type().Name(), name, typ.Name(), name)
+				continue
+			}
+			if got, want := df.String(), src.Field(i).String(); got != want {
+				t.Errorf("%s.%s = %q after projection, want %q (dropped in buildDomainGraphPlan?)", dst.Type().Name(), name, got, want)
+			}
+		}
+	}
+
+	edge := fill(reflect.TypeOf(GraphApplyEdge{}))
+	dep := fill(reflect.TypeOf(GraphApplyNodeDep{}))
+	plan := GraphApplyPlan{
+		Nodes: []GraphApplyNode{{Key: "k", Title: "T",
+			Deps: []GraphApplyNodeDep{dep.Interface().(GraphApplyNodeDep)}}},
+		Edges: []GraphApplyEdge{edge.Interface().(GraphApplyEdge)},
+	}
+	got, err := buildDomainGraphPlan(plan, createInput{createdBy: "t"})
+	if err != nil {
+		t.Fatalf("buildDomainGraphPlan: %v", err)
+	}
+	assertCopied(edge, reflect.ValueOf(got.Edges[0]))
+	assertCopied(dep, reflect.ValueOf(got.Nodes[0].Deps[0]))
 }
 
 func TestParseMarkdownDepSpecs(t *testing.T) {

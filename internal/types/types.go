@@ -679,7 +679,7 @@ func (m MolType) IsValid() bool {
 
 // ValidMolTypeNames enumerates the accepted mol-type values for error messages.
 func ValidMolTypeNames() string {
-	return joinNamesWithOr(validMolTypes...)
+	return joinNamesWithOr(validMolTypes)
 }
 
 // WispType categorizes ephemeral wisps for TTL-based compaction (gt-9br)
@@ -718,11 +718,11 @@ func (w WispType) IsValid() bool {
 
 // ValidWispTypeNames enumerates the accepted wisp-type values for error messages.
 func ValidWispTypeNames() string {
-	return joinNamesWithOr(validWispTypes...)
+	return joinNamesWithOr(validWispTypes)
 }
 
 // joinNamesWithOr formats a value list as "a, b, or c" for error messages.
-func joinNamesWithOr[T ~string](names ...T) string {
+func joinNamesWithOr[T ~string](names []T) string {
 	strs := make([]string, len(names))
 	for i, n := range names {
 		strs[i] = string(n)
@@ -913,41 +913,16 @@ func IsValidWaitsForGate(gate string) bool {
 	return gate == WaitsForAllChildren || gate == WaitsForAnyChildren
 }
 
-// BuildWaitsForMeta serializes waits-for fanout-gate metadata for
-// Dependency.Metadata, defaulting an empty gate to WaitsForAllChildren.
-func BuildWaitsForMeta(gate, spawnerID string) (string, error) {
-	if gate == "" {
-		gate = WaitsForAllChildren
-	}
-	raw, err := json.Marshal(WaitsForMeta{Gate: gate, SpawnerID: spawnerID})
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
-}
-
-// BuildWaitsForEdgeMeta serializes gate metadata for a waits-for dependency
-// edge, resolving a plan-local spawner key through keyToID when set. The
-// spawner is recorded for compatibility only — gate evaluation reads the
-// spawner from dependencies.depends_on_id (see ParseWaitsForGateMetadata).
-func BuildWaitsForEdgeMeta(gate, spawnerKey, spawnerID string, keyToID map[string]string) (string, error) {
-	if spawnerKey != "" {
-		resolved, ok := keyToID[spawnerKey]
-		if !ok {
-			return "", fmt.Errorf("unresolved spawner key %q", spawnerKey)
-		}
-		spawnerID = resolved
-	}
-	return BuildWaitsForMeta(gate, spawnerID)
-}
-
 // NewGraphEdgeDependency builds the dependency record for a graph plan edge,
 // shared by the embedded and domain apply paths so they cannot drift. Every
-// waits-for edge gets gate metadata: stored rows stay self-describing rather
-// than depending on every reader defaulting a missing gate (the runtime SQL
-// predicate COALESCEs to all-children, but readers before migration 0056 did
-// not, so '{}' or empty metadata must never be stored for graph-created
-// waits-for dependencies).
+// waits-for edge gets gate metadata (empty gate defaults to all-children):
+// stored rows stay self-describing rather than depending on every reader
+// defaulting a missing gate (the runtime SQL predicate COALESCEs to
+// all-children, but readers before migration 0056 did not, so '{}' or empty
+// metadata must never be stored for graph-created waits-for dependencies).
+// A plan-local spawnerKey resolves through keyToID; the spawner is recorded
+// for compatibility only — gate evaluation reads the spawner from
+// dependencies.depends_on_id (see ParseWaitsForGateMetadata).
 func NewGraphEdgeDependency(fromID, toID string, depType DependencyType, gate, spawnerKey, spawnerID, threadID string, keyToID map[string]string) (*Dependency, error) {
 	dep := &Dependency{
 		IssueID:     fromID,
@@ -956,11 +931,21 @@ func NewGraphEdgeDependency(fromID, toID string, depType DependencyType, gate, s
 		ThreadID:    threadID,
 	}
 	if depType == DepWaitsFor {
-		meta, err := BuildWaitsForEdgeMeta(gate, spawnerKey, spawnerID, keyToID)
+		if spawnerKey != "" {
+			resolved, ok := keyToID[spawnerKey]
+			if !ok {
+				return nil, fmt.Errorf("serializing waits-for metadata: unresolved spawner key %q", spawnerKey)
+			}
+			spawnerID = resolved
+		}
+		if gate == "" {
+			gate = WaitsForAllChildren
+		}
+		raw, err := json.Marshal(WaitsForMeta{Gate: gate, SpawnerID: spawnerID})
 		if err != nil {
 			return nil, fmt.Errorf("serializing waits-for metadata: %w", err)
 		}
-		dep.Metadata = meta
+		dep.Metadata = string(raw)
 	}
 	return dep, nil
 }

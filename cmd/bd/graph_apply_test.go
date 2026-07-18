@@ -38,7 +38,7 @@ func TestDocsGraphPlanExampleValidates(t *testing.T) {
 	if err := json.Unmarshal(planJSON, &plan); err != nil {
 		t.Fatalf("documented example is not valid plan JSON: %v", err)
 	}
-	if err := validateGraphApplyPlan(&plan, nil, nil); err != nil {
+	if err := validateGraphApplyPlan(&plan, nil, nil, GraphApplyOptions{}); err != nil {
 		t.Errorf("documented example rejected by validator: %v", err)
 	}
 	if _, err := validateGraphApplyStorageClasses(&plan, GraphApplyOptions{}, false); err != nil {
@@ -53,7 +53,7 @@ func TestValidateGraphApplyPlanAcceptsCustomTypes(t *testing.T) {
 			{Key: "spec", Title: "Step spec", Type: "spec"},
 		},
 	}
-	if err := validateGraphApplyPlan(plan, []string{"spec"}, nil); err != nil {
+	if err := validateGraphApplyPlan(plan, []string{"spec"}, nil, GraphApplyOptions{}); err != nil {
 		t.Fatalf("expected custom type %q to validate, got %v", "spec", err)
 	}
 }
@@ -64,11 +64,11 @@ func TestValidateGraphApplyPlanRejectsTypeWhenCustomTypesAbsent(t *testing.T) {
 			{Key: "spec", Title: "Step spec", Type: "spec"},
 		},
 	}
-	err := validateGraphApplyPlan(plan, nil, nil)
+	err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 	if err == nil {
 		t.Fatal("expected custom type to fail when nil customTypes")
 	}
-	want := `node "spec": invalid type "spec"`
+	want := `node "spec": invalid issue type: spec`
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
@@ -80,11 +80,11 @@ func TestValidateGraphApplyPlanRejectsInvalidTypes(t *testing.T) {
 			{Key: "root", Title: "Root", Type: "definitely-not-a-type"},
 		},
 	}
-	err := validateGraphApplyPlan(plan, nil, nil)
+	err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 	if err == nil {
 		t.Fatal("expected error for invalid type")
 	}
-	want := `node "root": invalid type "definitely-not-a-type"`
+	want := `node "root": invalid issue type: definitely-not-a-type`
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
@@ -97,7 +97,7 @@ func TestValidateGraphApplyPlanAcceptsBuiltInTypes(t *testing.T) {
 				{Key: "n1", Title: "Node", Type: typ},
 			},
 		}
-		if err := validateGraphApplyPlan(plan, nil, nil); err != nil {
+		if err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{}); err != nil {
 			t.Errorf("type %q rejected: %v", typ, err)
 		}
 	}
@@ -109,7 +109,7 @@ func TestValidateGraphApplyPlanAcceptsEmptyType(t *testing.T) {
 			{Key: "n1", Title: "Node", Type: ""},
 		},
 	}
-	if err := validateGraphApplyPlan(plan, nil, nil); err != nil {
+	if err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{}); err != nil {
 		t.Fatalf("empty type rejected: %v", err)
 	}
 }
@@ -137,7 +137,7 @@ func TestValidateGraphApplyPlanAcceptsNewFields(t *testing.T) {
 			},
 		},
 	}
-	if err := validateGraphApplyPlan(plan, nil, nil); err != nil {
+	if err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{}); err != nil {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
@@ -153,7 +153,7 @@ func TestValidateGraphApplyPlanRejectsNegativeEstimate(t *testing.T) {
 			{Key: "n", Title: "Node", Estimate: &neg},
 		},
 	}
-	err := validateGraphApplyPlan(plan, nil, nil)
+	err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 	if err == nil {
 		t.Fatal("expected error for negative estimate")
 	}
@@ -163,7 +163,7 @@ func TestValidateGraphApplyPlanRejectsNegativeEstimate(t *testing.T) {
 
 	canonical := 10
 	plan.Nodes[0].EstimatedMinutes = &canonical
-	err = validateGraphApplyPlan(plan, nil, nil)
+	err = validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 	if err == nil {
 		t.Fatal("expected error for negative estimate alongside estimated_minutes")
 	}
@@ -180,7 +180,7 @@ func TestValidateGraphApplyPlanRejectsEmptyDepTarget(t *testing.T) {
 			{Key: "n", Title: "Node", Deps: []GraphApplyNodeDep{{Target: ""}}},
 		},
 	}
-	err := validateGraphApplyPlan(plan, nil, nil)
+	err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 	if err == nil {
 		t.Fatal("expected error for empty dep target")
 	}
@@ -198,7 +198,7 @@ func TestValidateGraphApplyPlanParentAliasResolvesCorrectly(t *testing.T) {
 			{Key: "child", Title: "Child", Parent: "root"},
 		},
 	}
-	if err := validateGraphApplyPlan(plan, nil, nil); err != nil {
+	if err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{}); err != nil {
 		t.Fatalf("parent alias should resolve: %v", err)
 	}
 }
@@ -211,7 +211,7 @@ func TestValidateGraphApplyPlanParentAliasRejectsUnknownKey(t *testing.T) {
 			{Key: "child", Title: "Child", Parent: "nonexistent"},
 		},
 	}
-	err := validateGraphApplyPlan(plan, nil, nil)
+	err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 	if err == nil {
 		t.Fatal("expected error for unknown parent key via alias")
 	}
@@ -412,7 +412,7 @@ func TestValidateGraphApplyPlanRejectsLocalBlockingCycle(t *testing.T) {
 		},
 	}
 
-	err := validateGraphApplyPlan(plan, nil, nil)
+	err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 	if err == nil {
 		t.Fatal("expected local graph cycle to be rejected")
 	}
@@ -435,7 +435,7 @@ func TestValidateGraphApplyPlanReportsDeterministicCycleNode(t *testing.T) {
 		},
 	}
 
-	err := validateGraphApplyPlan(plan, nil, nil)
+	err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 	if err == nil {
 		t.Fatal("expected local graph cycle to be rejected")
 	}
@@ -456,7 +456,7 @@ func TestValidateGraphApplyPlanAllowsNonBlockingLocalCycle(t *testing.T) {
 		},
 	}
 
-	if err := validateGraphApplyPlan(plan, nil, nil); err != nil {
+	if err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{}); err != nil {
 		t.Fatalf("non-blocking cycle rejected: %v", err)
 	}
 }
@@ -472,7 +472,7 @@ func TestValidateGraphApplyPlanRejectsImplicitParentChildReverseBlockingCycle(t 
 		},
 	}
 
-	err := validateGraphApplyPlan(plan, nil, nil)
+	err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 	if err == nil {
 		t.Fatal("expected implicit parent-child plus reverse blocking edge to be rejected")
 	}
@@ -493,7 +493,7 @@ func TestValidateGraphApplyPlanIgnoresIDOverridesForLocalCycleValidation(t *test
 		},
 	}
 
-	if err := validateGraphApplyPlan(plan, nil, nil); err != nil {
+	if err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{}); err != nil {
 		t.Fatalf("ID override edge should not be treated as a local key cycle: %v", err)
 	}
 }
@@ -676,7 +676,7 @@ func singleNodePlanErr(customStatuses []string, mutate func(*GraphApplyNode)) er
 	node := GraphApplyNode{Key: "a", Title: "A"}
 	mutate(&node)
 	plan := &GraphApplyPlan{Nodes: []GraphApplyNode{node}}
-	return validateGraphApplyPlan(plan, nil, customStatuses)
+	return validateGraphApplyPlan(plan, nil, customStatuses, GraphApplyOptions{})
 }
 
 func TestValidateGraphApplyPlanNodeFieldRules(t *testing.T) {
@@ -735,7 +735,7 @@ func TestValidateGraphApplyPlanRejectsDuplicateExplicitIDs(t *testing.T) {
 			{Key: "b", Title: "B", ID: "bd-a1b2c3"},
 		},
 	}
-	err := validateGraphApplyPlan(plan, nil, nil)
+	err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 	if err == nil || !strings.Contains(err.Error(), "duplicate explicit id") {
 		t.Fatalf("expected duplicate explicit id error, got %v", err)
 	}
@@ -765,7 +765,7 @@ func TestValidateGraphApplyPlanEdgeGateRules(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			plan := &GraphApplyPlan{Nodes: twoNodes, Edges: []GraphApplyEdge{tc.edge}}
-			err := validateGraphApplyPlan(plan, nil, nil)
+			err := validateGraphApplyPlan(plan, nil, nil, GraphApplyOptions{})
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("expected plan to validate, got %v", err)
